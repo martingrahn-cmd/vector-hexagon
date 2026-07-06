@@ -209,6 +209,12 @@
   const SPAWN = 430;        // spawn distance (offscreen)
   const PLAYER_ROT = 3.05 * Math.PI; // rad/sec
 
+  // directional collision forgiveness: a wall taken head-on (centre of a
+  // blocked lane) is lethal; grazing a lane edge next to the gap while
+  // sweeping past is forgiven. Grace grows while the cursor is moving.
+  const EDGE_GRACE = 0.075;  // rad (~4.3°) forgiven at a gap edge, standing still
+  const MOVE_GRACE = 0.055;  // rad extra forgiveness while sweeping sideways
+
   let player = 0;           // player angle (logical frame)
   let walls = [];           // { dist, sides:[bool x6] }
   let elapsed = 0;
@@ -610,10 +616,18 @@
     }
     walls = walls.filter(w => w.dist + WALL_TH > -20);
 
-    // collision — player centre lane
+    // collision — forgiving at gap edges, hard head-on
+    const local = player - Math.floor(player/LANE)*LANE;   // 0..LANE within the lane
+    const moving = keys.left || keys.right || touchDir!==0;
+    const grace = EDGE_GRACE + (moving ? MOVE_GRACE : 0);
     for (const w of walls){
       if (!w.sides[lane]) continue;
-      if (ORBIT >= w.dist && ORBIT <= w.dist + WALL_TH){ gameOver(); break; }
+      if (ORBIT >= w.dist && ORBIT <= w.dist + WALL_TH){
+        // near a lane edge whose neighbour is the OPEN gap -> a side graze, forgive it
+        if (local < grace && !w.sides[(lane+5)%SIDES]) continue;          // grazing the left gap
+        if (local > LANE - grace && !w.sides[(lane+1)%SIDES]) continue;   // grazing the right gap
+        gameOver(); break;
+      }
     }
 
     shake *= Math.pow(0.0005, dt);
