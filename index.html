@@ -212,8 +212,11 @@
   // directional collision forgiveness: a wall taken head-on (centre of a
   // blocked lane) is lethal; grazing a lane edge next to the gap while
   // sweeping past is forgiven. Grace grows while the cursor is moving.
-  const EDGE_GRACE = 0.075;  // rad (~4.3°) forgiven at a gap edge, standing still
-  const MOVE_GRACE = 0.055;  // rad extra forgiveness while sweeping sideways
+  const EDGE_GRACE = 0.12;   // rad (~6.9°) forgiven at a gap edge, standing still
+  const MOVE_GRACE = 0.10;   // rad extra forgiveness while sweeping sideways (~+5.7°)
+  // radial forgiveness: the wall's very outer ("behind") and inner ("front")
+  // edges don't count — you have to be a touch more inside the wall to die.
+  const RADIAL_GRACE = 5.5;  // virtual units shaved off each radial edge
 
   let player = 0;           // player angle (logical frame)
   let walls = [];           // { dist, sides:[bool x6] }
@@ -622,7 +625,8 @@
     const grace = EDGE_GRACE + (moving ? MOVE_GRACE : 0);
     for (const w of walls){
       if (!w.sides[lane]) continue;
-      if (ORBIT >= w.dist && ORBIT <= w.dist + WALL_TH){
+      // radial band shrunk by RADIAL_GRACE so the front/back edge is forgiven
+      if (ORBIT >= w.dist + RADIAL_GRACE && ORBIT <= w.dist + WALL_TH - RADIAL_GRACE){
         // near a lane edge whose neighbour is the OPEN gap -> a side graze, forgive it
         if (local < grace && !w.sides[(lane+5)%SIDES]) continue;          // grazing the left gap
         if (local > LANE - grace && !w.sides[(lane+1)%SIDES]) continue;   // grazing the right gap
