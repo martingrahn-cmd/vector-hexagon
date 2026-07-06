@@ -91,6 +91,37 @@
     color: #9aa3c8; background: #0c0a1a; border: 1px solid #241a3a; padding: 8px 12px;
   }
   .credit { position: fixed; bottom: 12px; right: 14px; z-index: 4; font-size: 11px; letter-spacing: 0.14em; color: #3f4568; font-family: 'Orbitron'; pointer-events: none; }
+
+  #musicbtn {
+    position: fixed; bottom: 14px; left: 128px; z-index: 6; cursor: pointer;
+    font-family: 'Orbitron'; font-weight: 700; letter-spacing: 0.1em; font-size: 12px;
+    color: #9aa3c8; background: #0c0a1a; border: 1px solid #241a3a; padding: 8px 12px;
+  }
+
+  /* ---- announcer callout ---- */
+  #callout {
+    position: fixed; left: 0; right: 0; top: 34%; z-index: 5; text-align: center;
+    pointer-events: none; font-family: 'Orbitron', sans-serif; font-weight: 900;
+    letter-spacing: 0.12em; color: #fff; opacity: 0;
+    font-size: clamp(28px, 9vw, 78px); text-transform: uppercase;
+    text-shadow: 0 0 30px currentColor, 0 4px 22px rgba(0,0,0,0.6);
+  }
+  #callout.show { animation: callout 1.15s cubic-bezier(.2,.8,.2,1) forwards; }
+  #callout.hold { animation: calloutHold 1.9s cubic-bezier(.2,.8,.2,1) forwards; }
+  @keyframes callout {
+    0%   { opacity: 0; transform: scale(0.55); letter-spacing: 0.5em; }
+    18%  { opacity: 1; transform: scale(1.12); letter-spacing: 0.12em; }
+    32%  { transform: scale(1.0); }
+    78%  { opacity: 1; }
+    100% { opacity: 0; transform: scale(1.04); }
+  }
+  @keyframes calloutHold {
+    0%   { opacity: 0; transform: scale(0.5); letter-spacing: 0.5em; }
+    14%  { opacity: 1; transform: scale(1.14); letter-spacing: 0.12em; }
+    28%  { transform: scale(1.0); }
+    82%  { opacity: 1; transform: scale(1.0); }
+    100% { opacity: 0; transform: scale(1.06); }
+  }
 </style>
 </head>
 <body>
@@ -125,7 +156,11 @@
     <div class="best" id="hudBest">BEST 0.00</div>
   </div>
 
+  <div id="callout"></div>
+
   <div id="sound">♪ SOUND: ON</div>
+  <div id="musicbtn">＋ LOAD MP3</div>
+  <input type="file" id="musicfile" accept="audio/*" style="display:none" />
   <div class="credit">SLIPSTREAM</div>
 
 <script>
@@ -187,8 +222,18 @@
   let pending = [];         // queued masks to spawn
   let shake = 0;
   let deathAt = 0;
+  let cursorGlow = 0;       // close-call glow, decays
+  let beatFlash = 0;        // screen flash on strong beats
+  let milestoneIdx = 0;     // next survival-milestone to announce
 
   const BPM = 152, BEAT = 60/BPM;
+
+  // survival milestones — announced like the original's shape names
+  const MILESTONES = [
+    { t:10, label:'LINE'     }, { t:20, label:'TRIANGLE' },
+    { t:30, label:'SQUARE'   }, { t:40, label:'PENTAGON' },
+    { t:50, label:'HEXAGON'  }, { t:60, label:'PERFECT'  },
+  ];
 
   // ---------- patterns ----------
   const rnd = n => Math.floor(Math.random()*n);
@@ -221,8 +266,15 @@
     return PATTERNS[pool[rnd(pool.length)]];
   }
 
-  // ---------- audio (procedural) ----------
+  // ---------- audio ----------
+  // Two soundtrack sources feed the SAME beat engine (triggerBeat), so the
+  // field pulses/flashes in time with whichever is playing:
+  //   'synth' — a procedural WebAudio groove (default, always available)
+  //   'file'  — a loaded MP3 (e.g. a Suno track) analysed live for its beat
   let ac=null, master=null, soundOn=true, audioBeat=0;
+  let musicMode='synth';
+  let audioEl=null, mediaSrc=null, analyser=null, freqData=null;
+  let bassAvg=0, lastBeatT=0;
   const soundBtn = document.getElementById('sound');
   function initAudio(){
     if (ac) return;
@@ -231,6 +283,57 @@
       master = ac.createGain(); master.gain.value = 0.5; master.connect(ac.destination);
     } catch(e){ ac=null; }
   }
+
+  // beat engine — anything that hits a beat calls this; drives the visuals
+  function triggerBeat(strength){
+    pulse = 1;
+    const s = Math.max(0, Math.min(strength||1, 2.2));
+    beatFlash = Math.max(beatFlash, 0.35 + s*0.25);
+    // strong beats occasionally kick a spin flip so the field "dances"
+    if (s > 1.5 && Math.random() < 0.25){ spinDir *= -1; spinTimer = 3 + Math.random()*3; }
+  }
+
+  // ---- loaded-file music (Suno etc.) + live beat detection ----
+  function loadMusicFromURL(url, revoke){
+    initAudio(); if (!ac) return false;
+    try {
+      if (audioEl){ audioEl.pause(); }
+      audioEl = new Audio(); audioEl.src = url; audioEl.loop = true; audioEl.crossOrigin = 'anonymous';
+      // one MediaElementSource per element, wired element -> analyser -> master
+      mediaSrc = ac.createMediaElementSource(audioEl);
+      analyser = ac.createAnalyser(); analyser.fftSize = 256; analyser.smoothingTimeConstant = 0.75;
+      freqData = new Uint8Array(analyser.frequencyBinCount);
+      mediaSrc.connect(analyser); analyser.connect(master);
+      musicMode = 'file'; bassAvg = 0; lastBeatT = 0;
+      audioEl.addEventListener('ended', ()=>{}); // loop=true handles repeat
+      if (revoke) audioEl.addEventListener('canplaythrough', ()=>{}, {once:true});
+      musicBtn.textContent = '♪ MP3 ✓';
+      if (state===ST.PLAY){ audioEl.currentTime=0; audioEl.play().catch(()=>{}); }
+      return true;
+    } catch(e){ musicMode='synth'; return false; }
+  }
+  // pull the beat out of the playing MP3 via bass energy vs a running average
+  function analyseBeat(){
+    if (musicMode!=='file' || !analyser) return;
+    analyser.getByteFrequencyData(freqData);
+    let e=0; for (let i=0;i<6;i++) e+=freqData[i]; e/=6; // low-end energy
+    bassAvg += (e - bassAvg) * 0.06;
+    const now = ac.currentTime;
+    if (e > bassAvg*1.32 && e > 42 && now - lastBeatT > 0.19){
+      lastBeatT = now; triggerBeat(e/(bassAvg+1));
+    }
+  }
+  function musicStart(){
+    if (musicMode==='file' && audioEl){ audioEl.currentTime=0; audioEl.play().catch(()=>{}); }
+  }
+  function musicStop(){
+    if (musicMode==='file' && audioEl){ audioEl.pause(); }
+  }
+  // auto-adopt a committed soundtrack if present (assets/track.mp3)
+  fetch('assets/track.mp3', {method:'HEAD'}).then(r => {
+    if (r.ok) { /* defer real wiring to first user gesture */ hasBundledTrack = true; }
+  }).catch(()=>{});
+  let hasBundledTrack = false;
   function tone(freq, t0, dur, type, gain, glideTo){
     if (!ac) return;
     const o=ac.createOscillator(), g=ac.createGain();
@@ -253,7 +356,7 @@
   const ROOT = 55; // A1
   let stepIdx = 0;
   function scheduleAudio(){
-    if (!ac || !soundOn || state!==ST.PLAY) return;
+    if (!ac || !soundOn || state!==ST.PLAY || musicMode!=='synth') return;
     const ahead = 0.15;
     while (audioBeat < ac.currentTime + ahead){
       const t = audioBeat;
@@ -274,10 +377,43 @@
     kick(t);
   }
   function blip(f){ if(!ac||!soundOn) return; tone(f||660, ac.currentTime, 0.06,'square',0.12); }
+  function tick(f,g){ if(!ac||!soundOn) return; tone(f||1400, ac.currentTime, 0.045,'triangle', g||0.09); }
   soundBtn.addEventListener('click', () => {
     soundOn=!soundOn; soundBtn.textContent = '♪ SOUND: ' + (soundOn?'ON':'OFF');
     if (master) master.gain.value = soundOn?0.5:0;
   });
+
+  // ---------- announcer voice (Web Speech) ----------
+  let voice=null;
+  function pickVoice(){
+    if (!('speechSynthesis' in window)) return;
+    const vs = speechSynthesis.getVoices();
+    voice = vs.find(v=>/en[-_]?(GB|US)/i.test(v.lang)) || vs.find(v=>/^en/i.test(v.lang)) || vs[0] || null;
+  }
+  if ('speechSynthesis' in window){ pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+  function say(text){
+    if (!soundOn || !('speechSynthesis' in window)) return;
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      if (voice) u.voice = voice;
+      u.rate = 0.86; u.pitch = 0.55; u.volume = 0.95;
+      speechSynthesis.speak(u);
+    } catch(e){}
+  }
+
+  // ---------- on-screen announcer callouts ----------
+  const calloutEl = document.getElementById('callout');
+  function callout(text, hold, color){
+    calloutEl.textContent = text;
+    calloutEl.style.color = color || '#ffffff';
+    calloutEl.classList.remove('show','hold');
+    void calloutEl.offsetWidth;                 // restart the animation
+    calloutEl.classList.add(hold ? 'hold' : 'show');
+  }
+
+  // ---------- haptics ----------
+  function buzz(p){ if (navigator.vibrate) { try { navigator.vibrate(p); } catch(e){} } }
 
   // ---------- input ----------
   const keys = { left:false, right:false };
@@ -338,8 +474,28 @@
   goBtn.addEventListener('click', () => { initAudio(); startGame(); });
   retryBtn.addEventListener('click', () => { initAudio(); startGame(); });
 
+  // music source: load a local MP3 (e.g. a Suno track) to play the game to
+  const musicBtn  = document.getElementById('musicbtn');
+  const musicFile = document.getElementById('musicfile');
+  musicBtn.addEventListener('click', () => {
+    initAudio();
+    if (musicMode==='file'){
+      // toggle back to the synth groove
+      musicStop(); musicMode='synth'; musicBtn.textContent='＋ LOAD MP3'; blip(440);
+    } else {
+      musicFile.click();
+    }
+  });
+  musicFile.addEventListener('change', () => {
+    const f = musicFile.files && musicFile.files[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    loadMusicFromURL(url, true);
+    blip(760);
+  });
+
   function toMenu(){
-    state=ST.MENU;
+    state=ST.MENU; musicStop();
     startEl.classList.remove('hidden'); startEl.classList.add('on');
     overEl.classList.add('hidden'); overEl.classList.remove('on');
     hudEl.classList.add('hidden');
@@ -356,20 +512,27 @@
     player = LANE*0.5; walls.length=0; pending.length=0;
     elapsed=0; speed=d.base; world=0; spinDir=1; spinSpeed=d.spin*0.6; spinTimer=2.5;
     hue = [200,45,338][diffIdx]; hueDir=1; distAccum=0; shake=0; pulse=0; beatClock=0;
+    cursorGlow=0; beatFlash=0; milestoneIdx=0;
     stepIdx=0; if (ac) audioBeat = ac.currentTime + 0.06;
     if (ac && ac.state==='suspended') ac.resume();
+    // adopt a committed soundtrack on first play, if one is present
+    if (hasBundledTrack && musicMode==='synth' && !audioEl) loadMusicFromURL('assets/track.mp3', false);
+    musicStart();
     document.getElementById('hudBest').textContent = 'BEST ' + fmt(getBest(diffIdx));
     blip(720);
+    callout('BEGIN', false, '#7df9ff'); say('Begin');
   }
 
   function gameOver(){
-    state=ST.OVER; deathSound(); shake = 1;
+    state=ST.OVER; deathSound(); shake = 1; musicStop();
+    buzz([45, 40, 130]);                          // mobile crash haptic
     const b=getBest(diffIdx); let isNew=false;
     if (elapsed > b){ setBest(diffIdx, elapsed); isNew=true; }
     document.getElementById('finalTime').textContent = fmt(elapsed);
     document.getElementById('overBest').textContent = 'BEST ' + fmt(getBest(diffIdx));
     document.getElementById('newbest').classList.toggle('hidden', !isNew);
     hudEl.classList.add('hidden');
+    callout('GAME OVER', true, '#ff5e8a'); say('Game Over');
     setTimeout(() => {
       if (state===ST.OVER){
         overEl.classList.remove('hidden'); overEl.classList.add('on');
@@ -397,6 +560,12 @@
     elapsed += dt;
     speed = Math.min(d.base + elapsed*d.ramp, d.base + 190);
 
+    // survival-milestone announcements ("LINE", "TRIANGLE", ...)
+    while (milestoneIdx < MILESTONES.length && elapsed >= MILESTONES[milestoneIdx].t){
+      const m = MILESTONES[milestoneIdx++];
+      callout(m.label, false, '#ffd166'); say(m.label); blip(880);
+    }
+
     // player movement
     let dir=0;
     if (keys.left) dir-=1; if (keys.right) dir+=1;
@@ -415,18 +584,33 @@
     hue += hueDir * d.hueRate * dt;
     if (hue>360) hue-=360; if (hue<0) hue+=360;
 
-    // beat pulse
-    beatClock += dt;
-    if (beatClock >= BEAT){ beatClock -= BEAT; pulse = 1; }
-    pulse *= Math.pow(0.001, dt); // fast decay
+    // beat source: live-analyse the MP3 if one is playing, else a fixed metronome
+    if (musicMode==='file' && soundOn && audioEl && !audioEl.paused){
+      analyseBeat();
+    } else {
+      beatClock += dt;
+      if (beatClock >= BEAT){ beatClock -= BEAT; triggerBeat(1); }
+    }
+    pulse *= Math.pow(0.001, dt);      // fast decay
+    beatFlash *= Math.pow(0.002, dt);
+    cursorGlow *= Math.pow(0.0006, dt);
 
-    // walls
+    // walls — advance, then detect clearances (for close-call feedback)
     spawnStep(dt);
-    for (const w of walls) w.dist -= speed*dt;
+    const lane = Math.floor(player / LANE) % SIDES;
+    for (const w of walls){
+      const prevInner = w.dist + WALL_TH;
+      w.dist -= speed*dt;
+      const nowInner = w.dist + WALL_TH;
+      // a wall's inner edge just crossed inside the orbit -> we survived it
+      if (!w.cleared && prevInner >= ORBIT && nowInner < ORBIT){
+        w.cleared = true;
+        registerCloseCall(w, lane);
+      }
+    }
     walls = walls.filter(w => w.dist + WALL_TH > -20);
 
     // collision — player centre lane
-    const lane = Math.floor(player / LANE) % SIDES;
     for (const w of walls){
       if (!w.sides[lane]) continue;
       if (ORBIT >= w.dist && ORBIT <= w.dist + WALL_TH){ gameOver(); break; }
@@ -434,6 +618,26 @@
 
     shake *= Math.pow(0.0005, dt);
     scheduleAudio();
+  }
+
+  // how close was the cursor to a blocked edge when a wall passed?
+  function registerCloseCall(w, lane){
+    if (!w.sides[lane]) {
+      const local = player - Math.floor(player/LANE)*LANE;   // 0..LANE within the gap lane
+      const rightBlocked = w.sides[(lane+1)%SIDES];
+      const leftBlocked  = w.sides[(lane+5)%SIDES];
+      let edge = Infinity;
+      if (rightBlocked) edge = Math.min(edge, LANE - local);  // dist to right boundary
+      if (leftBlocked)  edge = Math.min(edge, local);         // dist to left boundary
+      const THRESH = 0.24;                                    // ~13.8°
+      if (edge < THRESH){
+        const intensity = 1 - edge/THRESH;                    // 0..1, 1 = razor thin
+        cursorGlow = Math.max(cursorGlow, 0.5 + intensity*0.5);
+        beatFlash  = Math.max(beatFlash, intensity*0.4);
+        tick(1500 + intensity*600, 0.06 + intensity*0.06);
+        if (intensity > 0.72) buzz(12);                       // subtle haptic on razor-thin passes
+      }
+    }
   }
 
   // ---------- colours ----------
@@ -444,8 +648,8 @@
 
   function render(){
     ctx.clearRect(0,0,W,H);
-    // background flash
-    const bgL = 5 + pulse*3;
+    // background flash — brightened by the beat and by close calls
+    const bgL = 5 + pulse*3 + beatFlash*6;
     ctx.fillStyle = hsl(hue+180, 30, bgL);
     ctx.fillRect(0,0,W,H);
 
@@ -497,6 +701,15 @@
 
     // --- player cursor ---
     if (state===ST.PLAY || state===ST.OVER){
+      // close-call ring — a quick pulse of light around the cursor
+      if (cursorGlow > 0.03){
+        const rr = ORBIT + 6 + cursorGlow*10;
+        ctx.beginPath(); ctx.arc(0,0, rr, player-0.5, player+0.5);
+        ctx.lineWidth = 3 + cursorGlow*7; ctx.lineCap='round';
+        ctx.strokeStyle = hsl(hue+40, 100, 75, 0.35 + cursorGlow*0.55);
+        ctx.shadowColor = hsl(hue+40,100,70); ctx.shadowBlur = 8 + cursorGlow*22;
+        ctx.stroke(); ctx.shadowBlur=0;
+      }
       const pr = ORBIT - 4;
       const w0 = 0.16; // half-width in radians
       const tip = polyPoint(player, pr+13);
@@ -504,7 +717,8 @@
       const b2 = polyPoint(player + w0, pr);
       ctx.beginPath(); ctx.moveTo(tip[0],tip[1]); ctx.lineTo(b1[0],b1[1]); ctx.lineTo(b2[0],b2[1]); ctx.closePath();
       ctx.fillStyle = state===ST.OVER ? hsl(hue,90,80) : '#ffffff';
-      ctx.shadowColor = hsl(hue,90,70); ctx.shadowBlur=12;
+      ctx.shadowColor = cursorGlow>0.03 ? hsl(hue+40,100,72) : hsl(hue,90,70);
+      ctx.shadowBlur = 12 + cursorGlow*20;
       ctx.fill(); ctx.shadowBlur=0;
     }
 
