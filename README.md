@@ -45,6 +45,25 @@ update to installed clients.
 | `Esc` | back to menu |
 | `M` | toggle sound |
 
+## Modes
+
+Pick on the title screen:
+
+- **CLIMB** — the tier-clear campaign below: survive, auto-advance, win by
+  clearing Hexagonest.
+- **ENDLESS** — no tier clears; the difficulty ramps forever and you chase a
+  survival high score (tracked separately per starting tier).
+
+## Shifting shape (4 / 5 / 6 lanes)
+
+Every ~12–20s the field **morphs between a square, a pentagon and a hexagon** —
+it collapses to a point, swaps the lane count and reblooms in the new shape,
+which changes the whole dodging rhythm. Morphs only happen while the screen is
+clear of walls, so the geometry is never ambiguous. Wall patterns are generated
+against the current shape (tunnel · spiral · zig-zag · spike · double-gap ·
+C-shape · 180-reversal · closing spiral · double-back fake-out · stutter), with
+the nastier ones weighted in on higher tiers and deeper into an endless run.
+
 ## Clearing a tier (60s) and climbing
 
 Survive **60 seconds** on a tier and the run **auto-advances into the next one,
@@ -63,6 +82,8 @@ menu (persisted). The HUD shows the tier you're currently in.
 - **Close-call feedback** — thread a wall by a hair and the cursor flares, the
   screen flashes and a high tick fires (with a subtle phone buzz on razor-thin
   passes). The closer the pass, the stronger the cue.
+- **Crash** — hitting a wall fires a proper impact: a filtered noise burst, a
+  low thud and a metallic ring-out.
 - **Haptics** — mobile devices vibrate on a crash (`navigator.vibrate`).
 
 ## Music (Suno-ready)

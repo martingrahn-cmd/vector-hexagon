@@ -63,6 +63,14 @@
   .diff.d1.sel { background: #ffd166; box-shadow: 0 0 26px rgba(255,209,102,0.5); }
   .diff.d2.sel { background: #ff5e8a; box-shadow: 0 0 26px rgba(255,94,138,0.5); }
 
+  .modes { display: flex; gap: 10px; justify-content: center; margin-bottom: 26px; }
+  .mode {
+    font-family: 'Orbitron'; font-weight: 700; letter-spacing: 0.14em; font-size: clamp(10px, 2.4vw, 12px);
+    padding: 9px 18px; cursor: pointer; background: #0c0a1a; color: #9aa3c8; border: 1px solid #241a3a;
+    clip-path: polygon(0 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%);
+  }
+  .mode.sel { background: #7df9ff; color: #07060f; border-color: transparent; box-shadow: 0 0 18px rgba(125,249,255,0.4); }
+
   .hint {
     font-family: 'Rajdhani'; font-weight: 600; letter-spacing: 0.06em;
     font-size: clamp(12px, 3vw, 15px); color: #c8d0ee; line-height: 1.6; max-width: 460px;
@@ -163,6 +171,10 @@
     <h1>VECTOR <span class="a">HEXAGON</span></h1>
     <div class="tag">one hex · six lanes · don't touch the walls</div>
     <div class="diffs" id="diffs"></div>
+    <div class="modes" id="modes">
+      <button class="mode sel" id="modeClimb">CLIMB</button>
+      <button class="mode" id="modeEndless">ENDLESS</button>
+    </div>
     <div class="hint">
       Steer with <b>← →</b> or <b>A / D</b> · on mobile, <b>tap &amp; hold</b> the left or right half.<br>
       Slip your cursor into the gap before the wall reaches the core.
@@ -208,13 +220,19 @@
   // ── VERSION ─────────────────────────────────────────────────────────────
   // Bump this AND the CACHE string in sw.js together on every deploy, so the
   // start screen shows the running version and installed apps update.
-  const VERSION = 'v1.2';
+  const VERSION = 'v1.3';
   const verEl = document.getElementById('version');
   if (verEl) verEl.textContent = VERSION;
   // ────────────────────────────────────────────────────────────────────────
   const canvas = document.getElementById('c');
   const ctx = canvas.getContext('2d');
-  const TAU = Math.PI * 2, SIDES = 6, LANE = TAU / SIDES;
+  const TAU = Math.PI * 2;
+  // SIDES/LANE are mutable — the field morphs between 4, 5 and 6 lanes mid-run.
+  // The shape only changes while no walls are on screen (see the morph machine),
+  // so every live wall's mask length always matches the current SIDES.
+  let SIDES = 6, LANE = TAU / SIDES;
+  function setSides(n){ SIDES = n; LANE = TAU / n; }
+  const SHAPE_NAME = { 4:'SQUARE', 5:'PENTAGON', 6:'HEXAGON' };
 
   // ---------- difficulty presets ----------
   const DIFFS = [
@@ -234,6 +252,12 @@
   const clearKey = i => 'vhex-cleared-' + DIFFS[i].key;
   const getCleared = i => localStorage.getItem(clearKey(i)) === '1';
   const setCleared = i => { try { localStorage.setItem(clearKey(i), '1'); } catch(e){} };
+  // ENDLESS-mode bests live under their own keys
+  const ebestKey = i => 'vhex-ebest-' + DIFFS[i].key;
+  const getEBest = i => parseFloat(localStorage.getItem(ebestKey(i)) || '0') || 0;
+  const setEBest = (i,v) => { try { localStorage.setItem(ebestKey(i), String(v)); } catch(e){} };
+  const modeBest = i => endless ? getEBest(i) : getBest(i);
+  const modeSetBest = (i,v) => endless ? setEBest(i,v) : setBest(i,v);
   const fmt = t => t.toFixed(2);
 
   // ---------- viewport ----------
@@ -289,6 +313,14 @@
   let stage = 0;            // current difficulty tier this run is on (auto-advances)
   let stageTime = 0;        // seconds elapsed within the current tier
   let won = false;          // set when the final tier is cleared
+  let endless = false;      // ENDLESS mode: no tier clear, difficulty climbs forever
+  // shape-morph machine: field collapses to a point, swaps SIDES, reblooms
+  let morph = 'none';       // 'none' | 'drain' | 'collapse' | 'expand'
+  let morphT = 0;           // phase timer
+  let morphScale = 1;       // field scale during the collapse/rebloom
+  let nextMorphAt = 1e9;    // elapsed time to attempt the next shape change
+  let pendingSides = 6;     // side count to swap to at the collapse midpoint
+  const MORPH_LEN = 0.24;   // seconds per collapse/expand half
 
   const BPM = 152, BEAT = 60/BPM;
 
@@ -301,32 +333,46 @@
 
   // ---------- patterns ----------
   const rnd = n => Math.floor(Math.random()*n);
-  const openMask = gap => { const s=[true,true,true,true,true,true]; s[((gap%6)+6)%6]=false; return s; };
-  const twoGap = (g1,g2) => { const s=[true,true,true,true,true,true]; s[((g1%6)+6)%6]=false; s[((g2%6)+6)%6]=false; return s; };
+  const HALF = () => Math.floor(SIDES/2);                       // "opposite" lane offset
+  const openMask = gap => { const s=Array(SIDES).fill(true); s[((gap%SIDES)+SIDES)%SIDES]=false; return s; };
+  const twoGap = (g1,g2) => { const s=Array(SIDES).fill(true); s[((g1%SIDES)+SIDES)%SIDES]=false; s[((g2%SIDES)+SIDES)%SIDES]=false; return s; };
 
-  // each pattern returns an array of masks (spawned in order, evenly spaced)
+  // each pattern returns an array of masks (spawned in order, evenly spaced),
+  // all sized to the current SIDES since the shape can't change mid-group
   const PATTERNS = [
     // straight tunnel — same gap for a few walls
-    () => { const g=rnd(6), n=2+rnd(3); return Array.from({length:n},()=>openMask(g)); },
+    () => { const g=rnd(SIDES), n=2+rnd(3); return Array.from({length:n},()=>openMask(g)); },
     // spiral — gap steps one lane each wall
-    () => { const g=rnd(6), d=Math.random()<0.5?1:-1, n=3+rnd(4); return Array.from({length:n},(_,i)=>openMask(g+d*i)); },
+    () => { const g=rnd(SIDES), d=Math.random()<0.5?1:-1, n=3+rnd(4); return Array.from({length:n},(_,i)=>openMask(g+d*i)); },
     // zig-zag — alternate between two adjacent gaps
-    () => { const g=rnd(6), d=Math.random()<0.5?1:-1, n=4+rnd(3); return Array.from({length:n},(_,i)=>openMask(g+(i%2?d:0))); },
+    () => { const g=rnd(SIDES), d=Math.random()<0.5?1:-1, n=4+rnd(3); return Array.from({length:n},(_,i)=>openMask(g+(i%2?d:0))); },
     // single spike
-    () => [ openMask(rnd(6)) ],
+    () => [ openMask(rnd(SIDES)) ],
     // wide double-gap (breather)
-    () => { const g=rnd(6); return [ twoGap(g, g+3) ]; },
+    () => { const g=rnd(SIDES); return [ twoGap(g, g+HALF()) ]; },
     // C-shape — gap jumps across, forcing a long sweep
-    () => { const g=rnd(6); return [ openMask(g), openMask(g+3), openMask(g) ]; },
+    () => { const g=rnd(SIDES); return [ openMask(g), openMask(g+HALF()), openMask(g) ]; },
+    // 180 reversal — tunnel one way, then the gap snaps to the opposite side
+    () => { const g=rnd(SIDES), k=2+rnd(2); const a=Array.from({length:k},()=>openMask(g));
+            const b=Array.from({length:k},()=>openMask(g+HALF())); return a.concat(b); },
+    // closing spiral — steps every wall AND tightens (walls arrive faster feel via count)
+    () => { const g=rnd(SIDES), d=Math.random()<0.5?1:-1, n=5+rnd(3); return Array.from({length:n},(_,i)=>openMask(g+d*i)); },
+    // double-back — spiral out then reverse direction (fake-out)
+    () => { const g=rnd(SIDES), d=Math.random()<0.5?1:-1, k=3+rnd(2);
+            const out=Array.from({length:k},(_,i)=>openMask(g+d*i));
+            const back=Array.from({length:k},(_,i)=>openMask(g+d*(k-1)-d*i)); return out.concat(back); },
+    // stutter — same gap with a teasing double-gap breather in the middle
+    () => { const g=rnd(SIDES); return [ openMask(g), openMask(g), twoGap(g, g+HALF()), openMask(g) ]; },
   ];
-  // difficulty-weighted pattern pick (by current tier)
+  // difficulty-weighted pattern pick (by current tier / endless depth)
   function nextPattern(){
-    const hard = stage;
+    const hard = endless ? Math.min(2 + Math.floor(elapsed/45), 4) : stage;
     const pool = [0,1,1,2,3,4,5];
-    if (hard>=1) pool.push(1,2,5);
-    if (hard>=2) pool.push(2,2,5,1);
+    if (hard>=1) pool.push(1,2,5,6);          // 180 reversal enters
+    if (hard>=2) pool.push(2,2,5,1,6,7,9);    // closing spiral + stutter
+    if (hard>=3) pool.push(6,7,8,9,2);        // double-back fake-outs (endless deep)
     // brief grace at the start of each tier: only calm patterns
-    if (stageTime < 3) return PATTERNS[3+rnd(2)]; // spike or breather
+    if (stageTime < 3 && !endless) return PATTERNS[3+rnd(2)]; // spike or breather
     return PATTERNS[pool[rnd(pool.length)]];
   }
 
@@ -434,10 +480,32 @@
       audioBeat += half; // two steps per beat -> 16th feel at half? keep it groovy
     }
   }
+  // crash — a filtered noise burst + low thud + metallic ring, the wall impact
+  let noiseBuf=null;
+  function getNoise(){
+    if (noiseBuf) return noiseBuf;
+    const len=Math.floor(ac.sampleRate*0.5);
+    noiseBuf=ac.createBuffer(1,len,ac.sampleRate);
+    const d=noiseBuf.getChannelData(0);
+    for (let i=0;i<len;i++) d[i]=Math.random()*2-1;
+    return noiseBuf;
+  }
   function deathSound(){
     if (!ac||!soundOn) return;
     const t=ac.currentTime;
-    tone(320,t,0.5,'sawtooth',0.25,60);
+    // impact noise burst, sweeping dark
+    const src=ac.createBufferSource(); src.buffer=getNoise();
+    const bp=ac.createBiquadFilter(); bp.type='lowpass';
+    bp.frequency.setValueAtTime(2200,t); bp.frequency.exponentialRampToValueAtTime(180,t+0.3);
+    const ng=ac.createGain(); ng.gain.setValueAtTime(0.55,t); ng.gain.exponentialRampToValueAtTime(0.0001,t+0.38);
+    src.connect(bp); bp.connect(ng); ng.connect(master); src.start(t); src.stop(t+0.42);
+    // low thud
+    const o=ac.createOscillator(), og=ac.createGain(); o.type='sine';
+    o.frequency.setValueAtTime(130,t); o.frequency.exponentialRampToValueAtTime(38,t+0.26);
+    og.gain.setValueAtTime(0.8,t); og.gain.exponentialRampToValueAtTime(0.0001,t+0.3);
+    o.connect(og); og.connect(master); o.start(t); o.stop(t+0.32);
+    // metallic ring-out
+    tone(300,t,0.45,'sawtooth',0.18,70);
     kick(t);
   }
   function blip(f){ if(!ac||!soundOn) return; tone(f||660, ac.currentTime, 0.06,'square',0.12); }
@@ -540,8 +608,8 @@
     DIFFS.forEach((d,i) => {
       const el=document.createElement('div');
       el.className='diff d'+i+(i===diffIdx?' sel':'');
-      const b=getBest(i);
-      const star = getCleared(i) ? ' ★' : '';
+      const b=modeBest(i);
+      const star = (!endless && getCleared(i)) ? ' ★' : '';
       el.innerHTML = d.name + star + '<span class="best">'+(b>0?('BEST '+fmt(b)):'—')+'</span>';
       el.addEventListener('click', () => { diffIdx=i; initAudio(); blip(560+i*80); buildDiffs(); });
       diffsEl.appendChild(el);
@@ -549,6 +617,18 @@
   }
   goBtn.addEventListener('click', () => { initAudio(); startGame(); });
   retryBtn.addEventListener('click', () => { initAudio(); startGame(); });
+
+  // mode toggle: CLIMB (auto-advancing tiers) vs ENDLESS (score chase)
+  const modeClimb = document.getElementById('modeClimb');
+  const modeEndless = document.getElementById('modeEndless');
+  function setMode(e){
+    endless = e; initAudio(); blip(e?520:640);
+    modeClimb.classList.toggle('sel', !e);
+    modeEndless.classList.toggle('sel', e);
+    buildDiffs();                 // bests differ per mode
+  }
+  modeClimb.addEventListener('click', () => setMode(false));
+  modeEndless.addEventListener('click', () => setMode(true));
 
   // music source: load a local MP3 (e.g. a Suno track) to play the game to
   const musicBtn  = document.getElementById('musicbtn');
@@ -587,6 +667,8 @@
     hudEl.classList.remove('hidden');
     // reset — the run starts on the selected tier and climbs from there
     stage = diffIdx; stageTime = 0;
+    setSides(6);                                  // always begin as a hexagon
+    morph='none'; morphScale=1; morphT=0; scheduleMorph();
     const d=DIFFS[stage];
     player = LANE*0.5; walls.length=0; pending.length=0;
     elapsed=0; speed=d.base; world=0; spinDir=1; spinSpeed=d.spin*0.6; spinTimer=2.5;
@@ -598,8 +680,9 @@
     if (hasBundledTrack && musicMode==='synth' && !audioEl) loadMusicFromURL('assets/track.mp3', false);
     musicStart();
     setHudLevel();
-    document.getElementById('hudBest').textContent = 'BEST ' + fmt(getBest(diffIdx));
-    callout('BEGIN', false, '#7df9ff'); announce([523.25, 659.25, 783.99], 'square'); say('Begin');
+    document.getElementById('hudBest').textContent = 'BEST ' + fmt(modeBest(diffIdx));
+    const label = endless ? 'ENDLESS' : 'BEGIN';
+    callout(label, false, '#7df9ff'); announce([523.25, 659.25, 783.99], 'square'); say('Begin');
   }
 
   // tier cleared at 60s -> seamlessly climb into the next, same run, timer runs on
@@ -621,9 +704,9 @@
     if (victory){ setCleared(diffIdx); buzz([50,40,50,40,120]); announce([659,784,988,1319],'square'); say('Cleared'); }
     else        { deathSound(); buzz([45,40,130]); announce([392,311.13,246.94],'sawtooth'); say('Game Over'); }
     let isNew=false;
-    if (elapsed > getBest(diffIdx)){ setBest(diffIdx, elapsed); isNew=true; }
+    if (elapsed > modeBest(diffIdx)){ modeSetBest(diffIdx, elapsed); isNew=true; }
     document.getElementById('finalTime').textContent = fmt(elapsed);
-    document.getElementById('overBest').textContent = 'BEST ' + fmt(getBest(diffIdx));
+    document.getElementById('overBest').textContent = 'BEST ' + fmt(modeBest(diffIdx));
     document.getElementById('newbest').classList.toggle('hidden', !isNew || victory);
     // title + clear banner
     document.getElementById('overTitle').innerHTML = victory ? 'YOU <span class="a">WIN</span>' : 'GAME <span class="a">OVER</span>';
@@ -642,6 +725,7 @@
   // ---------- spawning ----------
   function furthest(){ let m=-Infinity; for (const w of walls) if (w.dist>m) m=w.dist; return m===-Infinity?0:m; }
   function spawnStep(dt){
+    if (morph !== 'none') return;          // no spawning while the field is morphing
     const d=DIFFS[stage];
     distAccum += speed*dt;
     const spacing = d.spacing;
@@ -653,11 +737,47 @@
     }
   }
 
+  // ---------- shape-morph machine (4 / 5 / 6 lanes) ----------
+  function scheduleMorph(){
+    const opts = [4,5,6].filter(n => n !== SIDES);
+    pendingSides = opts[rnd(opts.length)];
+    nextMorphAt = elapsed + 12 + Math.random()*8;   // roughly every 12–20s
+  }
+  function updateMorph(dt){
+    if (morph === 'none'){
+      // don't start a morph right before a tier clear (climb mode)
+      if (elapsed >= nextMorphAt && (endless || STAGE_LEN - stageTime > 6)){
+        morph = 'drain';
+        pending.length = 0;         // drop any queued walls for the old shape
+      }
+      return;
+    }
+    if (morph === 'drain'){          // wait for the field to empty, then collapse
+      if (walls.length === 0){ morph = 'collapse'; morphT = 0; }
+      return;
+    }
+    if (morph === 'collapse'){
+      morphT += dt; world += 7*dt;
+      morphScale = Math.max(0.0001, 1 - morphT/MORPH_LEN);
+      if (morphT >= MORPH_LEN){ setSides(pendingSides); morph='expand'; morphT=0; beatFlash=1; pulse=1; buzz(18); }
+      return;
+    }
+    if (morph === 'expand'){
+      morphT += dt; world += 7*dt*(1 - morphT/MORPH_LEN);
+      morphScale = Math.min(1, morphT/MORPH_LEN);
+      if (morphT >= MORPH_LEN){ morphScale=1; morph='none'; distAccum=0; scheduleMorph(); }
+      return;
+    }
+  }
+
   // ---------- update ----------
   function update(dt){
     const d=DIFFS[stage];
     elapsed += dt; stageTime += dt;
-    speed = Math.min(d.base + stageTime*d.ramp, d.base + 190);
+    // climb: ramp within the tier, capped. endless: ramp forever off total time.
+    const rampT = endless ? elapsed : stageTime;
+    const cap   = endless ? 320 : 190;
+    speed = Math.min(d.base + rampT*d.ramp, d.base + cap);
 
     // in-tier shape milestones ("LINE", "TRIANGLE", ...)
     while (milestoneIdx < MILESTONES.length && stageTime >= MILESTONES[milestoneIdx].t){
@@ -665,8 +785,8 @@
       callout(m.label, false, '#ffd166'); announce([784, 1046.5], 'square'); say(m.label);
     }
 
-    // tier cleared at 60s -> climb to the next, or win if this was the last
-    if (stageTime >= STAGE_LEN){
+    // tier cleared at 60s -> climb to the next, or win (climb mode only)
+    if (!endless && stageTime >= STAGE_LEN){
       if (stage < DIFFS.length - 1) advanceStage();
       else { endRun(true); return; }
     }
@@ -700,6 +820,8 @@
     beatFlash *= Math.pow(0.002, dt);
     cursorGlow *= Math.pow(0.0006, dt);
 
+    updateMorph(dt);
+
     // walls — advance, then detect clearances (for close-call feedback)
     spawnStep(dt);
     const lane = Math.floor(player / LANE) % SIDES;
@@ -724,7 +846,7 @@
       // radial band shrunk by RADIAL_GRACE so the front/back edge is forgiven
       if (ORBIT >= w.dist + RADIAL_GRACE && ORBIT <= w.dist + WALL_TH - RADIAL_GRACE){
         // near a lane edge whose neighbour is the OPEN gap -> a side graze, forgive it
-        if (local < grace && !w.sides[(lane+5)%SIDES]) continue;          // grazing the left gap
+        if (local < grace && !w.sides[(lane+SIDES-1)%SIDES]) continue;          // grazing the left gap
         if (local > LANE - grace && !w.sides[(lane+1)%SIDES]) continue;   // grazing the right gap
         gameOver(); break;
       }
@@ -739,7 +861,7 @@
     if (!w.sides[lane]) {
       const local = player - Math.floor(player/LANE)*LANE;   // 0..LANE within the gap lane
       const rightBlocked = w.sides[(lane+1)%SIDES];
-      const leftBlocked  = w.sides[(lane+5)%SIDES];
+      const leftBlocked  = w.sides[(lane+SIDES-1)%SIDES];
       let edge = Infinity;
       if (rightBlocked) edge = Math.min(edge, LANE - local);  // dist to right boundary
       if (leftBlocked)  edge = Math.min(edge, local);         // dist to left boundary
@@ -771,7 +893,7 @@
     let ox=0, oy=0;
     if (shake>0.02){ ox=(Math.random()*2-1)*shake*14; oy=(Math.random()*2-1)*shake*14; }
     ctx.translate(cx+ox, cy+oy);
-    const beatScale = 1 + pulse*0.035;
+    const beatScale = (1 + pulse*0.035) * morphScale;   // morphScale collapses/reblooms the field
     ctx.scale(scale*beatScale, scale*beatScale);
     ctx.rotate(world);
 
