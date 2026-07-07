@@ -1,7 +1,7 @@
 /* Vector Hexagon — offline service worker.
    Cache-first for the app shell so it launches and plays with no network.
    Bump CACHE when any cached file changes to force an update. */
-const CACHE = 'vhex-v1';
+const CACHE = 'vhex-v2';
 const ASSETS = [
   './',
   './index.html',

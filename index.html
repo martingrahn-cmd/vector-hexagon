@@ -408,21 +408,32 @@
   }
   function blip(f){ if(!ac||!soundOn) return; tone(f||660, ac.currentTime, 0.06,'square',0.12); }
   function tick(f,g){ if(!ac||!soundOn) return; tone(f||1400, ac.currentTime, 0.045,'triangle', g||0.09); }
+  // announcer sting — a short arpeggio played for each callout (works everywhere)
+  function announce(seq, type){
+    if(!ac||!soundOn) return;
+    const t0=ac.currentTime;
+    seq.forEach((f,i)=> tone(f, t0 + i*0.075, 0.16, type||'square', 0.13));
+  }
   soundBtn.addEventListener('click', () => {
     soundOn=!soundOn; soundBtn.textContent = '♪ SOUND: ' + (soundOn?'ON':'OFF');
     if (master) master.gain.value = soundOn?0.5:0;
   });
 
-  // ---------- announcer voice (Web Speech) ----------
+  // ---------- announcer voice (Web Speech, desktop only) ----------
+  // On iOS, speechSynthesis is usually silent AND interrupts the audio session,
+  // which caused a ~1s hitch on each announcement. So the spoken voice is limited
+  // to non-iOS; everywhere else the sting + on-screen callout carry the announce.
+  const IS_IOS = /iphone|ipad|ipod/i.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   let voice=null;
   function pickVoice(){
-    if (!('speechSynthesis' in window)) return;
+    if (IS_IOS || !('speechSynthesis' in window)) return;
     const vs = speechSynthesis.getVoices();
     voice = vs.find(v=>/en[-_]?(GB|US)/i.test(v.lang)) || vs.find(v=>/^en/i.test(v.lang)) || vs[0] || null;
   }
-  if ('speechSynthesis' in window){ pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+  if (!IS_IOS && 'speechSynthesis' in window){ pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
   function say(text){
-    if (!soundOn || !('speechSynthesis' in window)) return;
+    if (IS_IOS || !soundOn || !('speechSynthesis' in window)) return;
     try {
       speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text);
@@ -549,8 +560,7 @@
     if (hasBundledTrack && musicMode==='synth' && !audioEl) loadMusicFromURL('assets/track.mp3', false);
     musicStart();
     document.getElementById('hudBest').textContent = 'BEST ' + fmt(getBest(diffIdx));
-    blip(720);
-    callout('BEGIN', false, '#7df9ff'); say('Begin');
+    callout('BEGIN', false, '#7df9ff'); announce([523.25, 659.25, 783.99], 'square'); say('Begin');
   }
 
   function gameOver(){
@@ -562,7 +572,7 @@
     document.getElementById('overBest').textContent = 'BEST ' + fmt(getBest(diffIdx));
     document.getElementById('newbest').classList.toggle('hidden', !isNew);
     hudEl.classList.add('hidden');
-    callout('GAME OVER', true, '#ff5e8a'); say('Game Over');
+    callout('GAME OVER', true, '#ff5e8a'); announce([392, 311.13, 246.94], 'sawtooth'); say('Game Over');
     setTimeout(() => {
       if (state===ST.OVER){
         overEl.classList.remove('hidden'); overEl.classList.add('on');
@@ -593,7 +603,7 @@
     // survival-milestone announcements ("LINE", "TRIANGLE", ...)
     while (milestoneIdx < MILESTONES.length && elapsed >= MILESTONES[milestoneIdx].t){
       const m = MILESTONES[milestoneIdx++];
-      callout(m.label, false, '#ffd166'); say(m.label); blip(880);
+      callout(m.label, false, '#ffd166'); announce([784, 1046.5], 'square'); say(m.label);
     }
 
     // player movement
