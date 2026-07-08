@@ -50,8 +50,12 @@ iframe hijack it) — back is **Backspace**.
 | `Backspace` | back to menu / close a screen |
 | `M` | toggle sound |
 
-The title screen has **HIGH SCORES** (your best time per mode+tier, plus your
-world rank when signed in on GameVolt) and **TROPHIES** (the 31-trophy grid).
+The title screen has **HIGH SCORES** and **TROPHIES** (the 31-trophy grid).
+High scores has two tabs: **LOCAL** (your best time per mode+tier) and
+**GLOBAL** — the live Supabase leaderboard (when embedded in GameVolt) with a
+board picker and TOP / AROUND ME / paging / ±1000 controls, so you can jump to
+the leader, your own neighbourhood, or any rank (e.g. #10000). Standalone, the
+GLOBAL tab prompts you to sign in on GameVolt.
 
 ## Modes
 
