@@ -72,9 +72,13 @@ Every ~12–20s the field **morphs between a square, a pentagon and a hexagon** 
 it collapses to a point, swaps the lane count and reblooms in the new shape,
 which changes the whole dodging rhythm. Morphs only happen while the screen is
 clear of walls, so the geometry is never ambiguous. Wall patterns are generated
-against the current shape (tunnel · spiral · zig-zag · spike · double-gap ·
-C-shape · 180-reversal · closing spiral · double-back fake-out · stutter), with
-the nastier ones weighted in on higher tiers and deeper into an endless run.
+against the current shape. Alongside the quick random ones (tunnel · spiral ·
+zig-zag · spike · double-gap · C-shape · 180-reversal · stutter) there are
+**authored signature set-pieces** — Spiral Staircase, Pendulum, The Bait, Twin
+Helix, The Pinch and Ladder Reversal — that carry their own rhythm: each wall
+can set a spacing multiplier (`wm(mask, mul)`), so a pattern can pack a tight
+burst or open a breather. The nastier patterns are weighted in on higher tiers
+and deeper into an endless run.
 
 ## Clearing a tier (60s) and climbing
 
